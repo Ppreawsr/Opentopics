@@ -3,53 +3,39 @@ import re
 import time
 from datetime import datetime, timedelta
 from selenium import webdriver
+from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 
-# ------------------------
-# ฟังก์ชันช่วยคำนวณ datetime จากข้อความเช่น "20 นาทีที่แล้ว", "3 ชั่วโมงที่แล้ว", "1 วันก่อน" ฯลฯ
-# ถ้า parse ไม่ได้ จะ return None
-# ------------------------
 def parse_relative_time(text: str):
     """
-    ตัวอย่างข้อความที่ Pantip อาจแสดง:
-    - "20 นาทีที่แล้ว"
-    - "3 ชั่วโมงที่แล้ว"
-    - "1 วันก่อน"
-    - "19 ชั่วโมงที่แล้ว"
+    แปลงข้อความเช่น "20 นาทีที่แล้ว", "3 ชั่วโมงที่แล้ว", "1 วันก่อน" -> datetime.now() - timedelta(...)
+    ถ้า parse ไม่ได้ -> return None
     """
-    # ลบช่องว่างและเว้นวรรคเกิน
     text = text.strip()
-
-    # เตรียม mapping ภาษาไทย -> timedelta
     unit_map = {
         "นาที": "minutes",
         "ชั่วโมง": "hours",
         "วัน": "days"
     }
-
-    # ใช้ regex เพื่อจับ (ตัวเลข) + (หน่วย) + "ที่แล้ว" หรือ "ก่อน"
-    # ตัวอย่าง: "(\d+)\s*(นาที|ชั่วโมง|วัน).*"  => group(1)=จำนวน, group(2)=หน่วย
     pattern = r"(\d+)\s*(นาที|ชั่วโมง|วัน)(ที่แล้ว|ก่อน)?"
-    match = re.search(pattern, text)
-    if not match:
-        return None  # parse ไม่ได้
+    m = re.search(pattern, text)
+    if not m:
+        return None
+    number_str = m.group(1)
+    unit_thai = m.group(2)
 
-    number_str = match.group(1)
-    unit_thai = match.group(2)
-
-    # แปลงเป็น int
     try:
         amount = int(number_str)
     except:
         return None
 
-    # ดูว่าเป็นหน่วยไหน
+    now = datetime.now()
+
     if unit_thai not in unit_map:
         return None
 
-    now = datetime.now()
     if unit_map[unit_thai] == "minutes":
         real_time = now - timedelta(minutes=amount)
     elif unit_map[unit_thai] == "hours":
@@ -61,107 +47,130 @@ def parse_relative_time(text: str):
 
     return real_time
 
-# ------------------------
-# ฟังก์ชันแปลง datetime -> string สวย ๆ
-# ------------------------
+
 def format_datetime(dt: datetime):
-    if not dt:
-        return "N/A"
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "N/A"
 
-# ------------------------
-# เริ่มโค้ดหลัก
-# ------------------------
-# จำนวนโพสต์สูงสุดที่ต้องการดึงจากหน้าแท็ก "หุ้น"
-MAX_POSTS = 20
 
-# ตั้งค่า Selenium WebDriver
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+# -----------------------------------------------------------------------------
+# ฟีเจอร์:
+# 1) เก็บโพสต์ (type=post) + คอมเมนต์ (type=comment) คนละ row
+# 2) ไม่จำกัดเวลารัน (pagination)
+# 3) ใส่ emoji
+# 4) parse เวลาจาก "xx นาทีที่แล้ว"
+# 5) แก้ปัญหา str-capabilities ด้วย Service
+# -----------------------------------------------------------------------------
+
+MAX_POSTS = 20  # จำนวนโพสต์สูงสุด
+
+# สร้าง WebDriver โดยใช้ Service object
+service = Service(ChromeDriverManager().install())
+driver = webdriver.Chrome(service=service)
 
 try:
-    # 1) เปิดหน้าเว็บหลักที่มี tag "หุ้น"
-    main_url = "https://pantip.com/tag/หุ้น"
-    driver.get(main_url)
-    time.sleep(5)  # รอให้หน้าเว็บโหลดข้อมูล
+    page_url = "https://pantip.com/tag/หุ้น"
+    total_scraped = 0
+    all_posts = []
 
-    # ดึง HTML ของหน้าเว็บหลัก
-    main_html = driver.page_source
-    soup = BeautifulSoup(main_html, "html.parser")
+    while True:
+        print(f"🔎 กำลังเข้า: {page_url}")
+        driver.get(page_url)
+        time.sleep(3)
 
-    # หา container หลักที่เก็บรายการโพสต์
-    container = soup.select_one("#__next > div > div > div > div.container > div:nth-child(6) > div.col-lg-8")
-    if not container:
-        print("❌ ไม่พบ container ในหน้า tag 'หุ้น'")
-        driver.quit()
-        exit()
+        soup = BeautifulSoup(driver.page_source, "html.parser")
 
-    # 2) ดึงโพสต์จาก container
-    posts = container.select("li.pt-list-item")[:MAX_POSTS]
-    print(f"🔎 พบโพสต์ทั้งหมด {len(posts)} โพสต์แรกในหน้า tag 'หุ้น'")
+        container = soup.select_one("#__next > div > div > div > div.container > div:nth-child(6) > div.col-lg-8")
+        if not container:
+            print("❌ ไม่พบ container ในหน้านี้, หยุดการทำงาน")
+            break
 
-    # เตรียมไฟล์ CSV
-    with open("pantip_data_hun.csv", "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        # คอลัมน์ตัวอย่าง: [ประเภท, ชื่อกระทู้, วัน-เวลาจริง, เนื้อหา]
-        # type = "post" หรือ "comment"
-        # ในกรณี post, "ชื่อกระทู้" คือชื่อ
-        # ในกรณี comment, "ชื่อกระทู้" เราอาจใส่ "-" หรือใส่ชื่อเดิมก็ได้
-        writer.writerow(["type", "title", "datetime", "content"])
+        posts = container.select("li.pt-list-item")
+        if not posts:
+            print("❌ ไม่พบโพสต์ใด ๆ ในหน้านี้, หยุดการทำงาน")
+            break
 
-        # 3) วนลูปแต่ละโพสต์
-        for idx, post in enumerate(posts, start=1):
-            # ดึงหัวข้อและลิงก์ของแต่ละโพสต์
+        for post in posts:
+            if total_scraped >= MAX_POSTS:
+                break
+
             title_tag = post.select_one("div.pt-list-item__title a")
             if not title_tag:
                 continue
+
             title = title_tag.get_text(strip=True)
             link = title_tag.get("href")
 
-            print(f"\n✨ ดึงข้อมูลโพสต์ที่ {idx}/{len(posts)}: {title}")
+            # ลอง parse วันเวลา จาก info span
+            info_span = post.select_one("div.pt-list-item__info span")
+            date_str = info_span.get("title") if info_span and info_span.has_attr("title") else ""
+            dt_obj = parse_relative_time(date_str)
+
+            all_posts.append((title, link, dt_obj))
+            total_scraped += 1
+
+        if total_scraped >= MAX_POSTS:
+            break
+
+        # หาปุ่มหน้าถัดไป
+        next_btn = soup.select_one("a.pagination-next")
+        if not next_btn:
+            print("❌ ไม่มีหน้าถัดไปแล้ว, หยุดการทำงาน")
+            break
+
+        next_href = next_btn.get("href")
+        if not next_href.startswith("http"):
+            next_href = "https://pantip.com" + next_href
+
+        page_url = next_href
+
+    print(f"✨ รวมลิงก์ได้ {len(all_posts)} โพสต์, กำลังเก็บรายละเอียด...")
+
+    # เปิดไฟล์ CSV
+    with open("pantip_data_hun.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        # คอลัมน์: [type, title, datetime, content]
+        writer.writerow(["type", "title", "datetime", "content"])
+
+        # วนลูปเข้าไปดูรายละเอียดแต่ละโพสต์ + เก็บคอมเมนต์
+        for i, (title, link, dt_obj) in enumerate(all_posts, start=1):
+            print(f"\n⚙️ [{i}/{len(all_posts)}] โพสต์: {title}")
             driver.get(link)
-            time.sleep(5)  # รอให้กระทู้โหลด
+            time.sleep(3)
 
-            post_html = driver.page_source
-            soup_post = BeautifulSoup(post_html, "html.parser")
+            post_soup = BeautifulSoup(driver.page_source, "html.parser")
 
-            # === (A) ดึง "วันที่/เวลา" ของโพสต์หลัก (ถ้าเป็น "19 ชั่วโมงที่แล้ว" จะ parse)
-            date_tag = soup_post.select_one("div.display-post-status-leftside")
-            dt_string = date_tag.get_text(strip=True) if date_tag else ""
-            real_dt = parse_relative_time(dt_string)  # ถ้าสำเร็จจะได้ datetime, ไม่งั้น None
-            real_dt_str = format_datetime(real_dt)
+            # (1) parse วันเวลาในโพสต์จริง
+            post_dt_div = post_soup.select_one("div.display-post-status-leftside")
+            dt_str2 = post_dt_div.get_text(strip=True) if post_dt_div else ""
+            post_dt_obj = parse_relative_time(dt_str2)
+            final_dt_str = format_datetime(post_dt_obj)
 
-            # === (B) ดึงเนื้อหาของโพสต์หลัก
-            post_content_tag = soup_post.select_one("div.display-post-story")
-            post_content = post_content_tag.get_text(separator=" ", strip=True) if post_content_tag else "ไม่พบเนื้อหากระทู้"
+            # (2) เนื้อหาโพสต์
+            post_content_div = post_soup.select_one("div.display-post-story")
+            post_content = post_content_div.get_text(separator=" ", strip=True) if post_content_div else "ไม่พบเนื้อหาโพสต์"
 
-            # 4) บันทึก row ประเภท "post"
-            writer.writerow(["post", title, real_dt_str, post_content])
+            #  บันทึกโพสต์ (type=post)
+            writer.writerow(["post", title, final_dt_str, post_content])
 
-            # === (C) ดึงคอมเมนต์ทั้งหมด
-            comments_wrappers = soup_post.select("div.display-post-wrapper.section-comment")
-            # วนลูปแต่ละคอมเมนต์
-            for comment in comments_wrappers:
-                # 4.1 ดึงเนื้อหา comment
-                # อยู่ใน div.display-post-story-wrapper.comment-wrapper > div.display-post-story
-                c_story_tag = comment.select_one("div.display-post-story")
-                c_content = c_story_tag.get_text(separator=" ", strip=True) if c_story_tag else "ไม่พบเนื้อหาคอมเมนต์"
+            # (3) เก็บคอมเมนต์
+            comments = post_soup.select("div.display-post-wrapper.section-comment")
+            print(f"💬 พบคอมเมนต์ {len(comments)} อัน")
+            for c in comments:
+                # parse เวลา comment
+                c_dt_div = c.select_one("div.display-post-status-leftside")
+                c_dt_str = c_dt_div.get_text(strip=True) if c_dt_div else ""
+                c_dt_obj = parse_relative_time(c_dt_str)
+                c_dt_final = format_datetime(c_dt_obj)
 
-                # 4.2 ดึงวันที่/เวลา comment (ถ้ามี)
-                # ส่วนใหญ่อยู่ใน "div.display-post-status-leftside" เช่นเดียวกับตัวโพสต์
-                c_dt_tag = comment.select_one("div.display-post-status-leftside")
-                c_dt_string = c_dt_tag.get_text(strip=True) if c_dt_tag else ""
-                c_real_dt = parse_relative_time(c_dt_string)
-                c_real_dt_str = format_datetime(c_real_dt)
+                # เนื้อหาคอมเมนต์
+                c_content_div = c.select_one("div.display-post-story-wrapper.comment-wrapper div.display-post-story")
+                c_content = c_content_div.get_text(separator=" ", strip=True) if c_content_div else "ไม่พบเนื้อหาคอมเมนต์"
 
-                # 4.3 บันทึกลง CSV: type=comment
-                writer.writerow(["comment", title, c_real_dt_str, c_content])
+                # บันทึก (type=comment)
+                writer.writerow(["comment", title, c_dt_final, c_content])
 
-            print(f"📝 ชื่อกระทู้: {title}")
-            print(f"🕒 วัน-เวลาโพสต์: {real_dt_str}")
-            print(f"📖 เนื้อหากระทู้ (สั้นๆ): {post_content[:80]}...")
-            print(f"💬 จำนวนคอมเมนต์: {len(comments_wrappers)}")
+    print("\n🎉 เสร็จสิ้น! ข้อมูลถูกบันทึกลงในไฟล์ 'pantip_data_hun.csv'")
 
 finally:
     driver.quit()
-    print("\n🎉 เสร็จสิ้นแล้ว! ข้อมูลถูกบันทึกในไฟล์ 'pantip_data_hun.csv'")
-
+    print("🚪 ปิดเบราว์เซอร์เรียบร้อย")
