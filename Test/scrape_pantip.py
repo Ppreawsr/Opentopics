@@ -2,175 +2,203 @@ import csv
 import re
 import time
 from datetime import datetime, timedelta
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 
+# ------------------------------
+#  ฟังก์ชัน parse วัน-เวลา
+# ------------------------------
 def parse_relative_time(text: str):
-    """
-    แปลงข้อความเช่น "20 นาทีที่แล้ว", "3 ชั่วโมงที่แล้ว", "1 วันก่อน" -> datetime.now() - timedelta(...)
-    ถ้า parse ไม่ได้ -> return None
-    """
     text = text.strip()
     unit_map = {
-        "นาที": "minutes",
-        "ชั่วโมง": "hours",
-        "วัน": "days"
+        "นาที": "minutes", "นาทีที่แล้ว": "minutes",
+        "ชม.": "hours", "ชั่วโมง": "hours",
+        "วัน": "days", "วินาที": "seconds",
+        "วินาทีที่แล้ว": "seconds"
     }
-    pattern = r"(\d+)\s*(นาที|ชั่วโมง|วัน)(ที่แล้ว|ก่อน)?"
+    pattern = r"(\d+)\s*(นาที|ชม\.|ชั่วโมง|วัน|วินาที)(ที่แล้ว|ก่อน)?"
     m = re.search(pattern, text)
     if not m:
         return None
-    number_str = m.group(1)
-    unit_thai = m.group(2)
 
+    amount_str = m.group(1)
+    unit_thai = m.group(2)
     try:
-        amount = int(number_str)
+        amount = int(amount_str)
+        if amount > 999999:
+            return None
     except:
         return None
 
     now = datetime.now()
-
     if unit_thai not in unit_map:
         return None
+    time_unit = unit_map[unit_thai]
 
-    if unit_map[unit_thai] == "minutes":
-        real_time = now - timedelta(minutes=amount)
-    elif unit_map[unit_thai] == "hours":
-        real_time = now - timedelta(hours=amount)
-    elif unit_map[unit_thai] == "days":
-        real_time = now - timedelta(days=amount)
+    if time_unit == "minutes":
+        dt = now - timedelta(minutes=amount)
+    elif time_unit == "hours":
+        dt = now - timedelta(hours=amount)
+    elif time_unit == "days":
+        dt = now - timedelta(days=amount)
+    elif time_unit == "seconds":
+        dt = now - timedelta(seconds=amount)
     else:
         return None
+    return dt
 
-    return real_time
+def parse_full_thai_datetime(text: str):
+    text = text.strip()
+    thai_months = {
+        "มกราคม": 1, "ม.ค.": 1,
+        "กุมภาพันธ์": 2, "ก.พ.": 2,
+        "มีนาคม": 3, "มี.ค.": 3,
+        "เมษายน": 4, "เม.ย.": 4,
+        "พฤษภาคม": 5, "พ.ค.": 5,
+        "มิถุนายน": 6, "มิ.ย.": 6,
+        "กรกฎาคม": 7, "ก.ค.": 7,
+        "สิงหาคม": 8, "ส.ค.": 8,
+        "กันยายน": 9, "ก.ย.": 9,
+        "ตุลาคม": 10, "ต.ค.": 10,
+        "พฤศจิกายน": 11, "พ.ย.": 11,
+        "ธันวาคม": 12, "ธ.ค.": 12
+    }
+    pattern = r"(\d{1,2})\s+([ก-ฮ.]+)\s+(\d{4})\s*(?:เวลา\s*(\d{1,2}):(\d{1,2})\s*น\.)?"
+    m = re.search(pattern, text)
+    if not m:
+        return None
 
+    day_str = m.group(1)
+    month_thai = m.group(2)
+    year_thai_str = m.group(3)
+    hour_str = m.group(4)
+    minute_str = m.group(5)
+
+    if not hour_str:
+        hour_str = "0"
+    if not minute_str:
+        minute_str = "0"
+
+    try:
+        day = int(day_str)
+        year_thai = int(year_thai_str)
+        hour = int(hour_str)
+        minute = int(minute_str)
+    except:
+        return None
+
+    if month_thai not in thai_months:
+        return None
+
+    month = thai_months[month_thai]
+    year = year_thai - 543  # พ.ศ. -> ค.ศ.
+
+    try:
+        dt = datetime(year, month, day, hour, minute)
+    except:
+        return None
+    return dt
+
+def parse_thai_datetime(text: str):
+    dt = parse_relative_time(text)
+    if dt:
+        return dt
+    dt = parse_full_thai_datetime(text)
+    if dt:
+        return dt
+    return None
 
 def format_datetime(dt: datetime):
-    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "N/A"
+    if not dt:
+        return "N/A"
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
+def is_within_days(dt, max_days=5):
+    if not dt:
+        return False
+    now = datetime.now()
+    return (now - dt).days < max_days
 
-# -----------------------------------------------------------------------------
-# ฟีเจอร์:
-# 1) เก็บโพสต์ (type=post) + คอมเมนต์ (type=comment) คนละ row
-# 2) ไม่จำกัดเวลารัน (pagination)
-# 3) ใส่ emoji
-# 4) parse เวลาจาก "xx นาทีที่แล้ว"
-# 5) แก้ปัญหา str-capabilities ด้วย Service
-# -----------------------------------------------------------------------------
+# ---------------------------
+# พารามิเตอร์ควบคุม
+# ---------------------------
+MAX_DAYS = 5
+SCROLL_TIMES = 100  # เพิ่มรอบการเลื่อน
+SCROLL_STEP_PX = 300
+WAIT_SCROLL = 1.5
 
-MAX_POSTS = 20  # จำนวนโพสต์สูงสุด
+# ปิด log เกะกะ
+chrome_options = Options()
+chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+chrome_options.add_argument('--log-level=3')
 
-# สร้าง WebDriver โดยใช้ Service object
 service = Service(ChromeDriverManager().install())
-driver = webdriver.Chrome(service=service)
+driver = webdriver.Chrome(service=service, options=chrome_options)
 
 try:
-    page_url = "https://pantip.com/tag/หุ้น"
-    total_scraped = 0
-    all_posts = []
+    driver.get("https://pantip.com/tag/หุ้น")
+    time.sleep(3)
 
-    while True:
-        print(f"🔎 กำลังเข้า: {page_url}")
-        driver.get(page_url)
-        time.sleep(3)
+    print(f"🔽 Scroll by {SCROLL_STEP_PX}px, for {SCROLL_TIMES} times ...")
+    for i in range(SCROLL_TIMES):
+        driver.execute_script(f"window.scrollBy(0, {SCROLL_STEP_PX});")
+        time.sleep(WAIT_SCROLL)
 
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-
-        container = soup.select_one("#__next > div > div > div > div.container > div:nth-child(6) > div.col-lg-8")
-        if not container:
-            print("❌ ไม่พบ container ในหน้านี้, หยุดการทำงาน")
-            break
-
+    # ดึงข้อมูลโพสต์
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    container = soup.select_one("#__next > div > div > div > div.container > div:nth-child(6) > div.col-lg-8")
+    all_post_links = []
+    if container:
         posts = container.select("li.pt-list-item")
-        if not posts:
-            print("❌ ไม่พบโพสต์ใด ๆ ในหน้านี้, หยุดการทำงาน")
-            break
+        print(f"🔎 พบ {len(posts)} posts ทั้งหมด (ยังไม่กรองตามวัน)")
+        for p in posts:
+            link_tag = p.select_one("div.pt-list-item__title a")
+            date_tag = p.select_one("div.pt-list-item__info")
+            if link_tag and date_tag:
+                href = link_tag.get("href")
+                date_str = date_tag.get_text(strip=True)
+                dt_obj = parse_thai_datetime(date_str)
+                if dt_obj and is_within_days(dt_obj, MAX_DAYS):
+                    full_url = href if href.startswith("http") else ("https://pantip.com" + href)
+                    all_post_links.append(full_url)
+    else:
+        print("❌ ไม่เจอ container หลักในหน้า")
 
-        for post in posts:
-            if total_scraped >= MAX_POSTS:
-                break
+    print(f"✅ ได้โพสต์ภายใน {MAX_DAYS} วัน: {len(all_post_links)} ลิงก์")
 
-            title_tag = post.select_one("div.pt-list-item__title a")
-            if not title_tag:
-                continue
+    if not all_post_links:
+        print("ไม่มีโพสต์ในช่วงเวลาที่ต้องการ")
+    else:
+        with open("pantip_data_5days.csv", "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["post_id", "type", "day", "datetime", "title", "content", "author"])
 
-            title = title_tag.get_text(strip=True)
-            link = title_tag.get("href")
+            for i, link in enumerate(all_post_links, start=1):
+                driver.get(link)
+                time.sleep(2)
+                post_soup = BeautifulSoup(driver.page_source, "html.parser")
 
-            # ลอง parse วันเวลา จาก info span
-            info_span = post.select_one("div.pt-list-item__info span")
-            date_str = info_span.get("title") if info_span and info_span.has_attr("title") else ""
-            dt_obj = parse_relative_time(date_str)
+                title_tag = post_soup.select_one("title")
+                title = title_tag.get_text(strip=True) if title_tag else "N/A"
 
-            all_posts.append((title, link, dt_obj))
-            total_scraped += 1
+                post_dt_div = post_soup.select_one("div.display-post-status-leftside")
+                dt_str = post_dt_div.get_text(strip=True) if post_dt_div else ""
+                post_dt_obj = parse_thai_datetime(dt_str)
+                day_str = dt_obj.strftime('%Y-%m-%d') if dt_obj else "N/A"
+                final_dt_str = format_datetime(dt_obj)
 
-        if total_scraped >= MAX_POSTS:
-            break
+                author_tag = post_soup.select_one(".display-post-name")
+                author = author_tag.get_text(strip=True) if author_tag else "Unknown"
 
-        # หาปุ่มหน้าถัดไป
-        next_btn = soup.select_one("a.pagination-next")
-        if not next_btn:
-            print("❌ ไม่มีหน้าถัดไปแล้ว, หยุดการทำงาน")
-            break
+                writer.writerow([link, "post", day_str, final_dt_str, title, "โพสต์หลัก", author])
 
-        next_href = next_btn.get("href")
-        if not next_href.startswith("http"):
-            next_href = "https://pantip.com" + next_href
-
-        page_url = next_href
-
-    print(f"✨ รวมลิงก์ได้ {len(all_posts)} โพสต์, กำลังเก็บรายละเอียด...")
-
-    # เปิดไฟล์ CSV
-    with open("pantip_data_hun.csv", "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        # คอลัมน์: [type, title, datetime, content]
-        writer.writerow(["type", "title", "datetime", "content"])
-
-        # วนลูปเข้าไปดูรายละเอียดแต่ละโพสต์ + เก็บคอมเมนต์
-        for i, (title, link, dt_obj) in enumerate(all_posts, start=1):
-            print(f"\n⚙️ [{i}/{len(all_posts)}] โพสต์: {title}")
-            driver.get(link)
-            time.sleep(3)
-
-            post_soup = BeautifulSoup(driver.page_source, "html.parser")
-
-            # (1) parse วันเวลาในโพสต์จริง
-            post_dt_div = post_soup.select_one("div.display-post-status-leftside")
-            dt_str2 = post_dt_div.get_text(strip=True) if post_dt_div else ""
-            post_dt_obj = parse_relative_time(dt_str2)
-            final_dt_str = format_datetime(post_dt_obj)
-
-            # (2) เนื้อหาโพสต์
-            post_content_div = post_soup.select_one("div.display-post-story")
-            post_content = post_content_div.get_text(separator=" ", strip=True) if post_content_div else "ไม่พบเนื้อหาโพสต์"
-
-            #  บันทึกโพสต์ (type=post)
-            writer.writerow(["post", title, final_dt_str, post_content])
-
-            # (3) เก็บคอมเมนต์
-            comments = post_soup.select("div.display-post-wrapper.section-comment")
-            print(f"💬 พบคอมเมนต์ {len(comments)} อัน")
-            for c in comments:
-                # parse เวลา comment
-                c_dt_div = c.select_one("div.display-post-status-leftside")
-                c_dt_str = c_dt_div.get_text(strip=True) if c_dt_div else ""
-                c_dt_obj = parse_relative_time(c_dt_str)
-                c_dt_final = format_datetime(c_dt_obj)
-
-                # เนื้อหาคอมเมนต์
-                c_content_div = c.select_one("div.display-post-story-wrapper.comment-wrapper div.display-post-story")
-                c_content = c_content_div.get_text(separator=" ", strip=True) if c_content_div else "ไม่พบเนื้อหาคอมเมนต์"
-
-                # บันทึก (type=comment)
-                writer.writerow(["comment", title, c_dt_final, c_content])
-
-    print("\n🎉 เสร็จสิ้น! ข้อมูลถูกบันทึกลงในไฟล์ 'pantip_data_hun.csv'")
+        print("\n🎉 เสร็จสิ้น! บันทึกข้อมูลลงไฟล์ 'pantip_data_5days.csv'")
 
 finally:
     driver.quit()
-    print("🚪 ปิดเบราว์เซอร์เรียบร้อย")
+    print("ปิดเบราว์เซอร์เรียบร้อย")
