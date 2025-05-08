@@ -23,7 +23,7 @@ def parse_thai_datetime(text):
 
 # ---------------- ค่าคงที่ ----------------
 TAG_URL = "https://pantip.com/tag/หุ้น"
-LIMIT_ROWS = 10000
+LIMIT_ROWS = 30
 WAIT = 1.5
 
 # ---------------- Selenium ----------------
@@ -101,22 +101,22 @@ try:
 
         psoup = BeautifulSoup(driver.page_source, "html.parser")
 
-        # --- โพสต์หลัก (ลองหลาย layout) ---
-        post_txt = ""
-        for sel in [
-            f"#topic-{topic_id} div.display-post-story-wrapper",
-            f"#topic-{topic_id} div.post-message",
-            f"#topic-{topic_id} div[data-role='comment-body']",
-            f"#topic-{topic_id} h2"
-        ]:
-            node = psoup.select_one(sel)
-            if node:
-                post_txt = node.get_text(" ", strip=True)
-                if post_txt: break
-        if not post_txt:
-            post_txt = psoup.title.get_text(" ", strip=True) if psoup.title else title_text
+        # --- แยก topic และ post ออกจากกัน ---
 
-        save("post", post_txt, time_obj.strftime("%Y-%m-%d %H:%M:%S") if time_obj else "N/A")
+        # ➊ เก็บ topic (หัวข้อกระทู้)
+        save("topic", title_text, time_obj.strftime("%Y-%m-%d %H:%M:%S") if time_obj else "N/A")
+
+        # ➋ พยายามหา post (เนื้อหาโพสต์หลัก)
+        post_sel = f"#topic-{topic_id} > div > div:nth-child(4) > div.display-post-story-wrapper > div"
+        post_node = psoup.select_one(post_sel)
+        post_txt = post_node.get_text(" ", strip=True) if post_node else ""
+
+        # ➌ ถ้ามีเนื้อหา ก็เก็บแยกเป็น post
+        if post_txt:
+            save("post", post_txt, time_obj.strftime("%Y-%m-%d %H:%M:%S") if time_obj else "N/A")
+        else:
+            print(f"⚠️ ไม่เจอเนื้อหาโพสต์ใน: {url}")
+
 
         # --- คอมเมนต์ (ลองหลาย layout) ---
         comments = psoup.select("#comments-jsrender div[id^='comment-']")
@@ -131,7 +131,7 @@ try:
             c_date = parse_thai_datetime(time_.text) if time_ else None
             save("comment", c_text, c_date.strftime("%Y-%m-%d %H:%M:%S") if c_date else "N/A")
 
-        print(f"✅ [{idx}/{len(items)}] {title_text[:60]} — saved: {saved_rows}/10000")
+        print(f"✅ [{idx}/{len(items)}] {title_text[:60]} — saved: {saved_rows}/30")
 
 finally:
     csvfile.close()
