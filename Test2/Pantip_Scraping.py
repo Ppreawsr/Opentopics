@@ -23,7 +23,7 @@ def parse_thai_datetime(text):
 
 # ---------------- ค่าคงที่ ----------------
 TAG_URL = "https://pantip.com/tag/หุ้น"
-LIMIT_ROWS = 30
+LIMIT_ROWS = 10000
 WAIT = 1.5
 
 # ---------------- Selenium ----------------
@@ -68,8 +68,6 @@ try:
 
     items = block.select("ul > li")
     
-    print(f"📌 หลัง scroll แล้วเจอทั้งหมด {len(items)} กระทู้ใน block")
-
     print(f"📌 พบกระทู้ {len(items)} รายการใน block")
 
     for idx, li in enumerate(items, start=1):
@@ -131,7 +129,7 @@ try:
             c_date = parse_thai_datetime(time_.text) if time_ else None
             save("comment", c_text, c_date.strftime("%Y-%m-%d %H:%M:%S") if c_date else "N/A")
 
-        print(f"✅ [{idx}/{len(items)}] {title_text[:60]} — saved: {saved_rows}/30")
+        print(f"✅ [{idx}/{len(items)}] {title_text[:60]} — saved: {saved_rows}/10000")
 
 finally:
     csvfile.close()
